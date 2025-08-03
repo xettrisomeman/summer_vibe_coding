@@ -1,0 +1,39 @@
+{
+  "name": "fact_checker",
+  "compatibility_date": "2025-02-04",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "651a44f1-1b1f-476d-89c9-024c88d259b3",
+      "database_name": "fact_checker",
+      "migrations_dir": "drizzle/migrations"
+    }
+  ],
+  "vars": {
+    "COHERE_API_KEY": "CRlq5HESSF1bKYUxV0ZE2duS6ISR29GH6HjBqECe"
+  },
+  // "kv_namespaces": [
+  //   {
+  //     "binding": "MY_KV_NAMESPACE",
+  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  //   }
+  // ],
+  // "r2_buckets": [
+  //   {
+  //     "binding": "MY_BUCKET",
+  //     "bucket_name": "my-bucket"
+  //   }
+  // ],
+  // "ai": {
+  //   "binding": "AI"
+  // },
+  // Workers Logs
+  // Docs: https://developers.cloudflare.com/workers/observability/logs/workers-logs/
+  // Configuration: https://developers.cloudflare.com/workers/observability/logs/workers-logs/#enable-workers-logs
+  "observability": {
+    "enabled": true
+  }
+}

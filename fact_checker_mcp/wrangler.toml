@@ -1,0 +1,18 @@
+name = "fact_checker"
+compatibility_date = "2025-02-04"
+compatibility_flags = ["nodejs_compat"]
+
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fact_checker"
+database_id = "651a44f1-1b1f-476d-89c9-024c88d259b3"
+migrations_dir = "drizzle/migrations"
+
+
+[observability]
+enabled = true
+
+
+[vars]
+COHERE_API_KEY = "CRlq5HESSF1bKYUxV0ZE2duS6ISR29GH6HjBqECe"
