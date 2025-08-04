@@ -7,12 +7,10 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { z } from "zod";
 import * as schema from "./db/schema";
 
-
-
 type Bindings = {
   DB: D1Database;
-  FACTCHECK_API_KEY?: string;
   COHERE_API_KEY: string;
+  FACTCHECK_API_KEY?: string;
   NEWS_API_KEY?: string;
 };
 
@@ -388,6 +386,190 @@ async function searchSportsDB(query: string): Promise<ExternalFactCheckResult | 
   }
 }
 
+// Helper function to search PubMed for medical claims
+async function searchPubMed(query: string): Promise<ExternalFactCheckResult | null> {
+  try {
+    // PubMed E-utilities API (free, no key required)
+    const searchTerm = encodeURIComponent(query);
+
+    // First, search for relevant articles
+    const searchResponse = await fetch(
+      `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${searchTerm}&retmax=5&retmode=json`
+    );
+
+    if (!searchResponse.ok) return null;
+
+    const searchData = await searchResponse.json() as any;
+    const pmids = searchData.esearchresult?.idlist;
+
+    if (!pmids || pmids.length === 0) return null;
+
+    // Get details for the first relevant article
+    const detailResponse = await fetch(
+      `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${pmids[0]}&retmode=json`
+    );
+
+    if (!detailResponse.ok) return null;
+
+    const detailData = await detailResponse.json() as any;
+    const article = detailData.result?.[pmids[0]];
+
+    if (!article) return null;
+
+    return {
+      source: "PubMed/NCBI",
+      summary: `${article.title} - ${article.authors?.[0]?.name || 'Unknown author'} et al. (${article.pubdate}) - ${article.source}`,
+      url: `https://pubmed.ncbi.nlm.nih.gov/${pmids[0]}/`,
+      confidence: 0.9, // PubMed is highly reliable for medical information
+    };
+  } catch (error) {
+    console.error("PubMed search error:", error);
+    return null;
+  }
+}
+
+// Helper function to search WHO databases
+async function searchWHO(query: string): Promise<ExternalFactCheckResult | null> {
+  try {
+    // WHO doesn't have a public API, but we can search their RSS feeds and fact sheets
+    const response = await fetch("https://www.who.int/rss-feeds/news-english.xml");
+
+    if (!response.ok) return null;
+
+    const rssText = await response.text();
+
+    // Simple RSS parsing for WHO health information
+    const queryWords = query.toLowerCase().split(' ').filter(word => word.length > 3);
+    const items = rssText.match(/<item>[\s\S]*?<\/item>/g) || [];
+
+    for (const item of items.slice(0, 10)) {
+      const title = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] ||
+        item.match(/<title>(.*?)<\/title>/)?.[1] || "";
+      const description = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/)?.[1] ||
+        item.match(/<description>(.*?)<\/description>/)?.[1] || "";
+      const link = item.match(/<link>(.*?)<\/link>/)?.[1] || "";
+
+      const content = (title + " " + description).toLowerCase();
+      const matchCount = queryWords.filter(word => content.includes(word)).length;
+
+      if (matchCount >= Math.min(2, queryWords.length)) {
+        return {
+          source: "World Health Organization (WHO)",
+          summary: `${title}: ${description.replace(/<[^>]*>/g, '').substring(0, 200)}...`,
+          url: link,
+          confidence: 0.95, // WHO is extremely reliable for health information
+        };
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("WHO search error:", error);
+    return null;
+  }
+}
+
+// Helper function to search SEC EDGAR for financial claims
+async function searchSEC(query: string): Promise<ExternalFactCheckResult | null> {
+  try {
+    // SEC EDGAR API (free, but rate limited)
+    const searchTerm = encodeURIComponent(query);
+
+    // Search for company filings
+    const response = await fetch(
+      `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&search=${searchTerm}&output=atom`,
+      {
+        headers: {
+          'User-Agent': 'FactCheckr/1.0 (fact-checking-service@example.com)'
+        }
+      }
+    );
+
+    if (!response.ok) return null;
+
+    const atomText = await response.text();
+
+    // Simple parsing of SEC EDGAR atom feed
+    const entries = atomText.match(/<entry>[\s\S]*?<\/entry>/g) || [];
+
+    if (entries.length > 0) {
+      const entry = entries[0];
+      if (entry) {
+        const title = entry.match(/<title>(.*?)<\/title>/)?.[1] || "";
+        const summary = entry.match(/<summary>(.*?)<\/summary>/)?.[1] || "";
+        const link = entry.match(/<link[^>]*href="([^"]*)"[^>]*>/)?.[1] || "";
+
+        return {
+          source: "SEC EDGAR Database",
+          summary: `${title}: ${summary.replace(/<[^>]*>/g, '').substring(0, 200)}...`,
+          url: link.startsWith('http') ? link : `https://www.sec.gov${link}`,
+          confidence: 0.9, // SEC filings are highly reliable for financial information
+        };
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("SEC search error:", error);
+    return null;
+  }
+}
+
+// Helper function to search arXiv for scientific papers
+async function searchArXiv(query: string): Promise<ExternalFactCheckResult | null> {
+  try {
+    // arXiv API (free, no authentication required)
+    const searchTerm = encodeURIComponent(query);
+
+    const response = await fetch(
+      `http://export.arxiv.org/api/query?search_query=all:${searchTerm}&start=0&max_results=5`
+    );
+
+    if (!response.ok) return null;
+
+    const xmlText = await response.text();
+
+    // Simple XML parsing for arXiv results
+    const entries = xmlText.match(/<entry>[\s\S]*?<\/entry>/g) || [];
+
+    if (entries.length > 0) {
+      const entry = entries[0];
+      if (entry) {
+        const title = entry.match(/<title>(.*?)<\/title>/)?.[1]?.trim() || "";
+        const summary = entry.match(/<summary>(.*?)<\/summary>/)?.[1]?.trim() || "";
+        const authors = entry.match(/<name>(.*?)<\/name>/g)?.map(match =>
+          match.replace(/<\/?name>/g, '')
+        ).slice(0, 3) || [];
+        const arxivId = entry.match(/<id>http:\/\/arxiv\.org\/abs\/(.*?)<\/id>/)?.[1] || "";
+
+        return {
+          source: "arXiv Preprint Server",
+          summary: `${title} - ${authors.join(', ')} - ${summary.substring(0, 200)}...`,
+          url: `https://arxiv.org/abs/${arxivId}`,
+          confidence: 0.8, // arXiv papers are reliable but not peer-reviewed
+        };
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("arXiv search error:", error);
+    return null;
+  }
+}
+
+// Helper function to search Google Scholar (placeholder - needs SerpAPI)
+// async function searchGoogleScholar(query: string): Promise<ExternalFactCheckResult | null> {
+//   // This would need SerpAPI or similar service
+//   return null;
+// }
+
+// Helper function to search legal databases (placeholder - needs API keys)
+// async function searchLegalDB(query: string): Promise<ExternalFactCheckResult | null> {
+//   // This would need CourtListener API key or similar
+//   return null;
+// }
+
 // Helper function to scrape webpage content
 async function scrapeWebpage(url: string): Promise<WebpageContent> {
   try {
@@ -441,6 +623,22 @@ async function verifyClaim(claim: string, context: string | undefined, apiKey: s
     lowerClaim.includes("nba") || lowerClaim.includes("football") ||
     lowerClaim.includes("soccer") || lowerClaim.includes("baseball");
 
+  const isMedical = lowerClaim.includes("health") || lowerClaim.includes("medicine") ||
+    lowerClaim.includes("disease") || lowerClaim.includes("vaccine") ||
+    lowerClaim.includes("drug") || lowerClaim.includes("treatment") ||
+    lowerClaim.includes("vitamin") || lowerClaim.includes("cancer") ||
+    lowerClaim.includes("covid") || lowerClaim.includes("medical");
+
+  const isFinancial = lowerClaim.includes("stock") || lowerClaim.includes("market") ||
+    lowerClaim.includes("sec") || lowerClaim.includes("earnings") ||
+    lowerClaim.includes("revenue") || lowerClaim.includes("profit") ||
+    lowerClaim.includes("company") || lowerClaim.includes("financial");
+
+  const isScientific = lowerClaim.includes("research") || lowerClaim.includes("study") ||
+    lowerClaim.includes("science") || lowerClaim.includes("experiment") ||
+    lowerClaim.includes("theory") || lowerClaim.includes("discovery") ||
+    lowerClaim.includes("climate") || lowerClaim.includes("physics");
+
   // Try external APIs first
   try {
     // Always try general sources
@@ -476,6 +674,32 @@ async function verifyClaim(claim: string, context: string | undefined, apiKey: s
       const sportsDBResult = await searchSportsDB(claim);
       if (sportsDBResult) {
         externalResults.push(sportsDBResult);
+      }
+    }
+
+    if (isMedical) {
+      const pubmedResult = await searchPubMed(claim);
+      if (pubmedResult) {
+        externalResults.push(pubmedResult);
+      }
+
+      const whoResult = await searchWHO(claim);
+      if (whoResult) {
+        externalResults.push(whoResult);
+      }
+    }
+
+    if (isFinancial) {
+      const secResult = await searchSEC(claim);
+      if (secResult) {
+        externalResults.push(secResult);
+      }
+    }
+
+    if (isScientific) {
+      const arxivResult = await searchArXiv(claim);
+      if (arxivResult) {
+        externalResults.push(arxivResult);
       }
     }
 
@@ -515,6 +739,9 @@ ${enhancedContext ? `Context and External Sources: "${enhancedContext}"` : ""}
 
 ${isEsports ? "IMPORTANT: This appears to be an esports-related claim. Pay special attention to Liquipedia sources as they are highly authoritative for esports tournaments." : ""}
 ${isSports ? "IMPORTANT: This appears to be a sports-related claim. Pay special attention to ESPN and TheSportsDB sources for sports events." : ""}
+${isMedical ? "IMPORTANT: This appears to be a medical/health claim. Pay special attention to PubMed and WHO sources as they are highly authoritative for medical information." : ""}
+${isFinancial ? "IMPORTANT: This appears to be a financial claim. Pay special attention to SEC EDGAR sources for official financial information." : ""}
+${isScientific ? "IMPORTANT: This appears to be a scientific claim. Pay special attention to arXiv and academic sources for scientific research." : ""}
 
 Based on the external sources provided (if any) and your knowledge, please provide:
 1. A verification status (true/false/mixed/unverified)
@@ -523,7 +750,7 @@ Based on the external sources provided (if any) and your knowledge, please provi
 4. Clear reasoning for your assessment
 
 ${conflictAnalysis.hasConflicts ? "CRITICAL: There are conflicting sources. Please analyze carefully and explain the discrepancies." : ""}
-${externalResults.length > 0 ? "IMPORTANT: Give higher weight to the external sources provided, especially specialized sources like Liquipedia for esports or ESPN for sports." : ""}
+${externalResults.length > 0 ? "IMPORTANT: Give higher weight to the external sources provided, especially specialized sources like Liquipedia for esports, ESPN for sports, PubMed/WHO for medical claims, SEC for financial data, or arXiv for scientific research." : ""}
 
 Format your response as JSON with the following structure:
 {
@@ -562,7 +789,9 @@ Format your response as JSON with the following structure:
 
       // Boost confidence for specialized sources
       const hasSpecializedSource = externalResults.some(r =>
-        r.source.includes("Liquipedia") || r.source.includes("ESPN") || r.source.includes("TheSportsDB")
+        r.source.includes("Liquipedia") || r.source.includes("ESPN") || r.source.includes("TheSportsDB") ||
+        r.source.includes("PubMed") || r.source.includes("WHO") || r.source.includes("SEC EDGAR") ||
+        r.source.includes("arXiv")
       );
       if (hasSpecializedSource && !conflictAnalysis.hasConflicts) {
         adjustedConfidence = Math.max(adjustedConfidence, 0.85);
